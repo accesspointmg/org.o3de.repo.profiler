@@ -6,7 +6,7 @@
  *
  */
 
-#include <CpuProfiler.h>
+#include <CpuProfilerImpl.h>
 
 #include <AzCore/Interface/Interface.h>
 #include <AzCore/Serialization/SerializeContext.h>
@@ -15,7 +15,14 @@
 
 namespace Profiler
 {
-    thread_local CpuTimingLocalStorage* CpuProfiler::ms_threadLocalStorage = nullptr;
+    thread_local CpuTimingLocalStorage* CpuProfilerImpl::ms_threadLocalStorage = nullptr;
+
+    // --- CpuProfiler ---
+
+    CpuProfiler* CpuProfiler::Get()
+    {
+        return AZ::Interface<CpuProfiler>::Get();
+    }
 
     // --- CachedTimeRegion ---
 
@@ -54,24 +61,25 @@ namespace Profiler
     }
 
 
-    // --- CpuProfiler ---
+    // --- CpuProfilerImpl ---
 
-    void CpuProfiler::Init()
+    void CpuProfilerImpl::Init()
     {
         AZ::Interface<AZ::Debug::Profiler>::Register(this);
+        AZ::Interface<CpuProfiler>::Register(this);
         m_initialized = true;
         AZ::SystemTickBus::Handler::BusConnect();
         m_continuousCaptureData.set_capacity(10);
     }
 
-    void CpuProfiler::Shutdown()
+    void CpuProfilerImpl::Shutdown()
     {
         if (!m_initialized)
         {
             return;
         }
-
         // When this call is made, no more thread profiling calls can be performed anymore
+        AZ::Interface<CpuProfiler>::Unregister(this);
         AZ::Interface<AZ::Debug::Profiler>::Unregister(this);
 
         // Wait for the remaining threads that might still be processing its profiling calls
@@ -88,7 +96,7 @@ namespace Profiler
         AZ::SystemTickBus::Handler::BusDisconnect();
     }
 
-    void CpuProfiler::BeginRegion(const AZ::Debug::Budget* budget, const char* eventName, [[maybe_unused]] size_t eventNameArgCount, ...)
+    void CpuProfilerImpl::BeginRegion(const AZ::Debug::Budget* budget, const char* eventName)
     {
         // Try to lock here, the shutdownMutex will only be contested when the CpuProfiler is shutting down.
         if (m_shutdownMutex.try_lock_shared())
@@ -107,7 +115,7 @@ namespace Profiler
         }
     }
 
-    void CpuProfiler::EndRegion([[maybe_unused]] const AZ::Debug::Budget* budget)
+    void CpuProfilerImpl::EndRegion([[maybe_unused]] const AZ::Debug::Budget* budget)
     {
         // Try to lock here, the shutdownMutex will only be contested when the CpuProfiler is shutting down.
         if (m_shutdownMutex.try_lock_shared())
@@ -122,12 +130,12 @@ namespace Profiler
         }
     }
 
-    const TimeRegionMap& CpuProfiler::GetTimeRegionMap() const
+    const CpuProfiler::TimeRegionMap& CpuProfilerImpl::GetTimeRegionMap() const
     {
         return m_timeRegionMap;
     }
 
-    bool CpuProfiler::BeginContinuousCapture()
+    bool CpuProfilerImpl::BeginContinuousCapture()
     {
         bool expected = false;
         if (m_continuousCaptureInProgress.compare_exchange_strong(expected, true))
@@ -141,7 +149,7 @@ namespace Profiler
         return false;
     }
 
-    bool CpuProfiler::EndContinuousCapture(AZStd::ring_buffer<TimeRegionMap>& flushTarget)
+    bool CpuProfilerImpl::EndContinuousCapture(AZStd::ring_buffer<TimeRegionMap>& flushTarget)
     {
         if (!m_continuousCaptureInProgress.load())
         {
@@ -164,12 +172,12 @@ namespace Profiler
         return false;
     }
 
-    bool CpuProfiler::IsContinuousCaptureInProgress() const
+    bool CpuProfilerImpl::IsContinuousCaptureInProgress() const
     {
         return m_continuousCaptureInProgress.load();
     }
 
-    void CpuProfiler::SetProfilerEnabled(bool enabled)
+    void CpuProfilerImpl::SetProfilerEnabled(bool enabled)
     {
         AZStd::unique_lock<AZStd::mutex> lock(m_threadRegisterMutex);
 
@@ -196,12 +204,12 @@ namespace Profiler
         }
     }
 
-    bool CpuProfiler::IsProfilerEnabled() const
+    bool CpuProfilerImpl::IsProfilerEnabled() const
     {
         return m_enabled;
     }
 
-    void CpuProfiler::OnSystemTick()
+    void CpuProfilerImpl::OnSystemTick()
     {
         if (!m_enabled)
         {
@@ -241,7 +249,7 @@ namespace Profiler
         m_timeRegionMap = AZStd::move(newMap);
     }
 
-    void CpuProfiler::RegisterThreadStorage()
+    void CpuProfilerImpl::RegisterThreadStorage()
     {
         AZStd::unique_lock<AZStd::mutex> lock(m_threadRegisterMutex);
         if (!ms_threadLocalStorage)
@@ -363,7 +371,7 @@ namespace Profiler
         }
     }
 
-    void CpuTimingLocalStorage::TryFlushCachedMap(ThreadTimeRegionMap& cachedTimeRegionMap)
+    void CpuTimingLocalStorage::TryFlushCachedMap(CpuProfiler::ThreadTimeRegionMap& cachedTimeRegionMap)
     {
         // Try to lock, if it's already in use (the cached regions in the array are being copied to the map)
         // it'll show up in the next iteration when the user requests it.
@@ -389,7 +397,7 @@ namespace Profiler
 
     // --- CpuProfilingStatisticsSerializer ---
 
-    CpuProfilingStatisticsSerializer::CpuProfilingStatisticsSerializer(const AZStd::ring_buffer<TimeRegionMap>& continuousData)
+    CpuProfilingStatisticsSerializer::CpuProfilingStatisticsSerializer(const AZStd::ring_buffer<CpuProfiler::TimeRegionMap>& continuousData)
     {
         // Create serializable entries
         for (const auto& timeRegionMap : continuousData)
