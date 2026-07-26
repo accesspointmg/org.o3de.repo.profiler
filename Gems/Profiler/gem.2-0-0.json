@@ -100,5 +100,16 @@
   ],
   "user_tags": [
     "org.o3de.gem.profiler"
+  ],
+  "releases": [
+    {
+      "name": "2607.0",
+      "source_controls": [
+        {
+          "git": "https://github.com/accesspointmg/o3de-profiler.git",
+          "tag": "2607.0"
+        }
+      ]
+    }
   ]
 }
